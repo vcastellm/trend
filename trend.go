@@ -9,17 +9,17 @@ import (
 	"net/http"
 	"go/build"
 	"io/ioutil"
+	"encoding/json"
 )
 
 //import "github.com/kylelemons/go-gypsy/yaml"
-//import "code.google.com/p/go.net/websocket"
+import "code.google.com/p/go.net/websocket"
 import "labix.org/v2/mgo"
-import "labix.org/v2/mgo/bson"
 
-const basePkg = "github.com/seasonlabs/toukei/"
+const basePkg = "github.com/seasonlabs/trend/"
 
 var port *int = flag.Int("p", 8080, "Port to listen.")
-var putter Event
+var putter *Putter
 
 func rootDir() string {
 	// find and serve static files
@@ -44,17 +44,10 @@ func main() {
 	// 	log.Fatalf("readfile(%q): %s", "config.yml", err)
 	// }
 
-	session, err := mgo.Dial("127.0.0.1")
-        if err != nil {
-                log.Fatal(err)
-        }
-        defer session.Close()
-        db := session.DB("trend")
-        putter = NewEvent(db)
-
 	http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(assetsDir()))))
 	http.HandleFunc("/", root)
-	http.HandleFunc("/1.0/event/put", putter)
+	http.HandleFunc("/1.0/event/put", putHttp)
+	http.Handle("/1.0/event/ws/put", websocket.Handler(putWs))
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
 
@@ -65,13 +58,56 @@ func root(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-func putter(w http.ResponseWriter, req *http.Request) {
-	b, err := iouil.ReadAll(req.Body)
+func putHttp(w http.ResponseWriter, req *http.Request) {
+	session, err := mgo.Dial("127.0.0.1")
+        if err != nil {
+                panic(err)
+        }
+        defer session.Close()
+        db := session.DB("trend")
 
-	fmt.Println(b)
+        putter = NewPutter(db)
 	
+	b, err := ioutil.ReadAll(req.Body)
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-	event.Putter(b)
+
+	fmt.Println(string(b))
+
+	var events []Event
+	if err := json.Unmarshal(b, &events); err != nil {
+		fmt.Fprintf(w, "{\"error\": \"%s\"}", err)
+	}
+
+	for _, event := range events {
+		if err := putter.Put(event); err != nil {
+			fmt.Fprintf(w, "{\"error\": \"%s\"}", err)
+		}
+	}
+}
+
+func putWs(ws *websocket.Conn) {
+	session, err := mgo.Dial("127.0.0.1")
+        if err != nil {
+                panic(err)
+        }
+        defer session.Close()
+        db := session.DB("trend")
+
+        putter = NewPutter(db)
+
+	var event Event
+	for {
+		if err := websocket.JSON.Receive(ws, &event); err != nil {
+			websocket.Message.Send(ws, fmt.Sprintf("{\"error\": \"%s\"}", err))
+			break
+		}
+		fmt.Printf("received: %#v\n", event)
+		
+		if err := putter.Put(event); err != nil {
+			websocket.Message.Send(ws, fmt.Sprintf("{\"error\": \"%s\"}", err))
+			break
+		}
+	}
 }
