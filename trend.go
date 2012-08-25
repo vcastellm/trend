@@ -8,14 +8,18 @@ import (
 	"log"
 	"net/http"
 	"go/build"
+	"io/ioutil"
 )
 
 //import "github.com/kylelemons/go-gypsy/yaml"
 //import "code.google.com/p/go.net/websocket"
+import "labix.org/v2/mgo"
+import "labix.org/v2/mgo/bson"
 
 const basePkg = "github.com/seasonlabs/toukei/"
 
 var port *int = flag.Int("p", 8080, "Port to listen.")
+var putter Event
 
 func rootDir() string {
 	// find and serve static files
@@ -40,14 +44,34 @@ func main() {
 	// 	log.Fatalf("readfile(%q): %s", "config.yml", err)
 	// }
 
+	session, err := mgo.Dial("127.0.0.1")
+        if err != nil {
+                log.Fatal(err)
+        }
+        defer session.Close()
+        db := session.DB("trend")
+        putter = NewEvent(db)
+
 	http.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(assetsDir()))))
-	http.HandleFunc("/", MainServer)
+	http.HandleFunc("/", root)
+	http.HandleFunc("/1.0/event/put", putter)
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
 
-func MainServer(w http.ResponseWriter, req *http.Request) {
+func root(w http.ResponseWriter, req *http.Request) {
 	t := template.Must(template.New("foo").ParseGlob(rootDir() + "/index.html"))
 	if err := t.ExecuteTemplate(w, "index", req.Host+":"+req.URL.Scheme); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func putter(w http.ResponseWriter, req *http.Request) {
+	b, err := iouil.ReadAll(req.Body)
+
+	fmt.Println(b)
+	
+	if err != nil {
+		log.Fatal(err)
+	}
+	event.Putter(b)
 }
